@@ -1,0 +1,14 @@
+# 运行时产物
+net-switch.log
+state.txt
+*.log
+
+# 本机基准/临时脚本（未纳管）
+measure.ps1
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

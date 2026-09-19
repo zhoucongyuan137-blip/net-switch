@@ -1,0 +1,6 @@
+# .bat 必须 CRLF，否则 cmd 可能解析异常
+*.bat text eol=crlf
+# PowerShell 脚本保持 CRLF；脚本以 UTF-8 with BOM 保存（PowerShell 5.1 读中文必需），别做编码转换
+*.ps1 text eol=crlf
+# 文档
+*.md text eol=lf
