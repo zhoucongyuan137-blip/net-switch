@@ -111,7 +111,13 @@ powershell -ExecutionPolicy Bypass -File build\build-exe.ps1     # 产物：dist
 - ⚠️ exe 里的脚本是**打包那一刻的快照**，改完 `.ps1` 要重新编译；所以计划任务默认仍指向 `.ps1`（永远是最新代码）。想让任务改调 exe：`net-switch.exe -Mode install`。
 - ⚠️ 内嵌脚本**不是加密**的，谁都能从 exe 里提取 —— 别往脚本里写密码（本项目密码走 DPAPI 单独存储）。
 
+## Linux 版
+
+同一套逻辑有 Linux 实现（单文件 Python 3，`linux/net-switch-linux.py`）：机制换成"默认路由 metric"而不是接口跃点，
+`SO_BINDTODEVICE` 钉网卡做探测，开机/定时改用 systemd 单元与 timer。用法与验证细节见 [`linux/README.md`](linux/README.md)。
+
 ## 手动等价操作
+
 
 ```powershell
 # 热点优先
