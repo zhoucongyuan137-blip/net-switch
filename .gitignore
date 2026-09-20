@@ -3,7 +3,16 @@ net-switch.log
 state.txt
 *.log
 
-# 本机基准/临时脚本（未纳管）
+# 凭据 / 状态（绝不能进仓库）
+UserData/
+campus.json
+campus-state.json
+*.secret
+
+# 本机临时脚本与截图
+_*.ps1
+_*.png
+_*.txt
 measure.ps1
 
 # 编辑器 / 系统

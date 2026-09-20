@@ -43,7 +43,8 @@ param(
   [string]$LogonTask = 'NetSwitch-Logon',
   [string]$WatchTask = 'NetSwitch-Watch',   # 旧版整夜常驻任务，安装时清掉
   [string]$LegacyTask = 'NetSwitch-Auto',   # 更旧版"每分钟起进程"任务，安装时清掉
-  [switch]$DryRun
+  [switch]$DryRun,
+  [switch]$NoCampusLogin                   # 关闭"有线没认证时自动调 campus-login.ps1"
 )
 
 $ErrorActionPreference = 'Continue'
@@ -195,12 +196,37 @@ function Apply-CampusPreference {
 function Save-State([string]$s) { if (-not $DryRun) { try { Set-Content -LiteralPath $StatePath -Value $s -Encoding UTF8 } catch {} } }
 function Read-State { try { Get-Content -LiteralPath $StatePath -ErrorAction SilentlyContinue | Select-Object -First 1 } catch { $null } }
 
+# 有线在线但出不了网时，调 campus-login.ps1 做校园网认证（带频率限制，认证脚本内部自带）
+function Invoke-CampusLogin {
+  $cl = Join-Path $BaseDir 'campus-login.ps1'
+  if (-not (Test-Path -LiteralPath $cl)) { return $false }
+  Write-Log '  有线在线但出不了网 -> 尝试校园网认证'
+  try {
+    $out = & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $cl -Mode login -Quiet 2>&1
+    foreach ($l in $out) { Write-Log ('  校园网: ' + ("$l").Trim()) }
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    Write-Log ('  校园网认证调用失败: ' + $_.Exception.Message)
+    return $false
+  }
+}
+
 # 探测一轮并按需切换；返回本轮结论
 function Invoke-Round {
   $wiredUp = @(); $wiredOn = @()
   foreach ($a in Get-WiredAliases) {
     if (Get-AdapterUp $a) { $wiredUp += $a; if (Test-Online (Get-AdapterIPv4 $a)) { $wiredOn += $a } }
   }
+
+  # 有线插着却没网：多半是校园网需要认证 —— 先试一次自助登录，再重新判定出口
+  if ($wiredUp.Count -gt 0 -and $wiredOn.Count -eq 0 -and -not $NoCampusLogin) {
+    if (Invoke-CampusLogin) {
+      Start-Sleep -Seconds 1
+      $wiredOn = @()
+      foreach ($a in $wiredUp) { if (Test-Online (Get-AdapterIPv4 $a)) { $wiredOn += $a } }
+    }
+  }
+
   $altUp = @(); $altOn = @()
   foreach ($a in Get-AltAliases) {
     if (Get-AdapterUp $a) { $altUp += $a; if (Test-Online (Get-AdapterIPv4 $a)) { $altOn += $a } }

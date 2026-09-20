@@ -4,6 +4,8 @@
 可网线还插着、链路和网关都活着 —— 于是出现这个经典现象：
 
 > **插着网线时连手机热点也上不了网，把网线拔了立刻就好。**
+>
+> 本项目还会在**有线在线但需要认证**时，用你保存的账号自动认证校园网（见「校园网自动认证」）。
 
 ## 原因
 
@@ -69,7 +71,28 @@ net-switch.ps1 -Mode hotspot / campus                          # 手动强制
 `-NightMinutes` / `-MorningMinutes` 最长等待、`-AltMetric` / `-WiredMetric` 跃点值、`-DryRun` 演练。
 换成自己的时间点只需改 `-NightTime` / `-MorningTime`。
 
-Windows 上直接双击同目录的 `.bat` 即可（`查看状态` / `切到手机热点` / `切回有线优先` / `安装-夜间自动切换` / `卸载-自动切换`）。
+Windows 上直接双击同目录的 `.bat` 即可（`查看状态` / `切到手机热点` / `切回有线优先` / `校园网登录设置` / `安装-夜间自动切换` / `卸载-自动切换`）。
+
+## 校园网自动认证（可选）
+
+有线插着、却上不了网，其实只是**校园网没认证**时 —— 会先用你保存的账号自动认证一次，再决定走哪条线，不用再开浏览器点门户。
+
+图形界面：双击 **`校园网登录设置.bat`**（账号填学号，运营商可选 移动 / 联通 / 电信 / 校园网）
+
+![设置界面](docs/gui.png)
+
+- **密码用 Windows DPAPI 加密**后存放在 `%APPDATA%\net-switch\campus.json`（只有本机当前用户能解密），不落明文、也不进仓库
+- 协议：Dr.COM ePortal，`GET /eportal/?c=Portal&a=login&login_method=1&user_account=<学号+运营商后缀>&user_password=<密码>&wlan_user_ip=<有线网卡IP>`
+  （后缀 `@cmcc` / `@unicom` / `@telecom` / 校园网无后缀）；响应是 `dr1003({...})`，
+  **按 `result`/`msg` 判断真实成败**（HTTP 200 并不等于登录成功），GBK 编码响应自动兜底解码
+- 触发时机：登录时 / 插网线或网络状态变化时 / 每天 07:00 —— 都是隐藏窗口，不轮询、不常驻
+- 带频率限制与失败退避（默认失败后 30 分钟内不再重试），不会反复打扰认证服务器
+- 命令行：`campus-login.ps1 -Mode status | login | forget | gui`，加 `-Force` 可强制认证一次
+- 给 net-switch 传 `-NoCampusLogin` 可关掉"自动认证"这一步
+
+> 协议参数参考 [snowsong42/CUMT_SchoolNet_tk_GUI](https://github.com/snowsong42/CUMT_SchoolNet_tk_GUI)（该校 ePortal 的登录方式）；
+> 代码按协议重写，未复制其源码（对方仓库未附许可证）。该功能只是用你自己的账号做正规认证，
+> **不会也不能绕过学校夜间停止认证的策略**。
 
 ## 手动等价操作
 
