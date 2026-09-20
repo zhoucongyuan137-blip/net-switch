@@ -348,7 +348,7 @@ function Install-Task {
     @{ Name = $MorningTask; Time = $MorningTime; Desc = '校园网恢复时切回有线优先（定点运行几分钟即退出）'
        Trig = (New-DailyTrigger $MorningTime); Args = "$common -Mode settle -Until wiredup -MaxMinutes $MorningMinutes" }
     @{ Name = $LogonTask;   Time = '';           Desc = '网络状态变化或登录时自动判断一次（兜底，非常驻）'
-       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n    </LogonTrigger>`r`n" + $eventTrig
+       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n      <Delay>PT30S</Delay>`r`n    </LogonTrigger>`r`n" + $eventTrig
        Args = "$common -Mode auto" }
   )
 
