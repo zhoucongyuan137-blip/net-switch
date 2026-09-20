@@ -18,6 +18,7 @@ dist/
 
 # 本机临时脚本与截图
 _*.ps1
+_*.sh
 _*.png
 _*.txt
 measure.ps1
