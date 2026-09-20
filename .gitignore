@@ -9,6 +9,10 @@ campus.json
 campus-state.json
 *.secret
 
+# Python 缓存
+__pycache__/
+*.pyc
+
 # 构建产物（自己 build 或从 Release 下载）
 dist/
 
