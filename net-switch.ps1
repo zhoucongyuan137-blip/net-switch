@@ -41,6 +41,7 @@ param(
   [string]$NightTask = 'NetSwitch-Night',
   [string]$MorningTask = 'NetSwitch-Morning',
   [string]$LogonTask = 'NetSwitch-Logon',
+  [string]$CampusTask = 'NetSwitch-Campus',   # 登录后立刻认证（不等选路那 30 秒）
   [string]$WatchTask = 'NetSwitch-Watch',   # 旧版整夜常驻任务，安装时清掉
   [string]$LegacyTask = 'NetSwitch-Auto',   # 更旧版"每分钟起进程"任务，安装时清掉
   [switch]$DryRun,
@@ -332,6 +333,7 @@ function Install-Task {
   Remove-Item -LiteralPath $StatePath -ErrorAction SilentlyContinue
 
   $common = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath
+  $commonCampus = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $BaseDir 'campus-login.ps1')
 
   # 网络状态一变（插拔网线 / NCSI 由"有网"变"无网"或反之）就自动判断一次；
   # 不轮询、不常驻，只在事件真的发生时才起一个几秒的进程
@@ -347,6 +349,9 @@ function Install-Task {
        Trig = (New-DailyTrigger $NightTime);   Args = "$common -Mode settle -Until wireddown -MaxMinutes $NightMinutes" }
     @{ Name = $MorningTask; Time = $MorningTime; Desc = '校园网恢复时切回有线优先（定点运行几分钟即退出）'
        Trig = (New-DailyTrigger $MorningTime); Args = "$common -Mode settle -Until wiredup -MaxMinutes $MorningMinutes" }
+    @{ Name = $CampusTask;  Time = '';           Desc = '登录后立刻做校园网认证（不等选路的 30 秒判定）'
+       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n    </LogonTrigger>`r`n"
+       Args = "$commonCampus -Mode login -WaitForIpSec 40" }
     @{ Name = $LogonTask;   Time = '';           Desc = '网络状态变化或登录时自动判断一次（兜底，非常驻）'
        Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n      <Delay>PT30S</Delay>`r`n    </LogonTrigger>`r`n" + $eventTrig
        Args = "$common -Mode auto" }
@@ -379,7 +384,7 @@ function Install-Task {
 }
 
 function Uninstall-Task {
-  foreach ($t in @($NightTask, $MorningTask, $LogonTask, $WatchTask, $LegacyTask)) {
+  foreach ($t in @($NightTask, $MorningTask, $CampusTask, $LogonTask, $WatchTask, $LegacyTask)) {
     $q = & schtasks.exe /Delete /TN $t /F 2>&1
     if ("$q" -notmatch '找不到|ERROR') { Write-Log "已删除计划任务 $t" }
   }

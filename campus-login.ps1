@@ -24,6 +24,7 @@ param(
   [string]$PortalUrl = 'http://10.2.5.251:801/eportal/',
   [int]$TimeoutSec   = 6,
   [int]$MinIntervalSec = 180,                          # 两次尝试最短间隔
+  [int]$WaitForIpSec   = 0,                            # 网卡还没 IP 时最多等多少秒（登录后立刻认证用）
   [int]$FailBackoffMin = 30,                           # 失败后的退避时间（分钟）
   [string]$ConfigPath = "$env:APPDATA\net-switch\campus.json",
   [switch]$Force,                                      # 忽略"已在线"，强制登录一次
@@ -451,6 +452,16 @@ switch ($Mode) {
     if ($cfg -and -not $cfg.AutoLogin -and -not $Force -and -not $Password) { Write-Log '自动登录已在设置里关闭，跳过。'; exit 0 }
 
     $ip = Get-WiredIPv4
+    if (-not $ip -and $WaitForIpSec -gt 0) {
+      # 开机/登录瞬间网卡往往还没 DHCP 完，就地等一会儿（比固定延迟更早、比直接放弃更可靠）
+      $sw = [Diagnostics.Stopwatch]::StartNew()
+      Write-Log ('有线网卡还没拿到 IPv4，最多等 {0} 秒…' -f $WaitForIpSec)
+      while (-not $ip -and $sw.Elapsed.TotalSeconds -lt $WaitForIpSec) {
+        Start-Sleep -Seconds 2
+        $ip = Get-WiredIPv4
+      }
+      if ($ip) { Write-Log ('有线网卡就绪（等了 {0:N0} 秒，IP {1}）' -f $sw.Elapsed.TotalSeconds, $ip) }
+    }
     if (-not $ip) { Write-Log '有线网卡没有 IPv4，跳过校园网认证。'; exit 4 }
     if (-not $Force -and (Test-CampusOnline $ip)) { Write-Log '校园网已在线，无需认证。'; exit 0 }
 
