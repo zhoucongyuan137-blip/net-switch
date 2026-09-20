@@ -96,6 +96,21 @@ Windows 上直接双击同目录的 `.bat` 即可（`查看状态` / `切到手�
 > 代码按协议重写，未复制其源码（对方仓库未附许可证）。该功能只是用你自己的账号做正规认证，
 > **不会也不能绕过学校夜间停止认证的策略**。
 
+## 打包成 EXE（单文件分发）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build\build-exe.ps1     # 产物：dist\net-switch.exe（约 57 KB）
+```
+
+- **不需要安装任何东西**：用 Windows 自带的 `csc.exe` 编译，两个 `.ps1` 作为内嵌资源打进 exe；运行时依赖系统自带的 PowerShell 5.1。
+- **双击直接出设置界面**（无参数 = `campus-login.ps1 -Mode gui`）；命令行用法与脚本一致：
+  `net-switch.exe -Mode status` / `-Mode install` / `-Mode settle -Until wireddown`
+  （`-Mode gui|login|forget` 自动路由到 campus-login，其余走 net-switch）
+- **窗口行为**：编译为控制台子系统，启动器会检查"这个控制台是不是我自己创建的"——是（计划任务/双击）就立刻隐藏窗口，**不闪黑框**；从终端运行时保持可见、输出与退出码照常。
+- 首次运行把脚本释放到 `%LOCALAPPDATA%\net-switch\bin\<版本>\`；日志与状态写在 **exe 所在目录**（由启动器通过 `NETSWITCH_HOME` 指定）。
+- ⚠️ exe 里的脚本是**打包那一刻的快照**，改完 `.ps1` 要重新编译；所以计划任务默认仍指向 `.ps1`（永远是最新代码）。想让任务改调 exe：`net-switch.exe -Mode install`。
+- ⚠️ 内嵌脚本**不是加密**的，谁都能从 exe 里提取 —— 别往脚本里写密码（本项目密码走 DPAPI 单独存储）。
+
 ## 手动等价操作
 
 ```powershell

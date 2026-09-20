@@ -33,7 +33,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $ScriptPath = $MyInvocation.MyCommand.Path
-$BaseDir    = Split-Path -Parent $ScriptPath
+$BaseDir    = if ($env:NETSWITCH_HOME) { $env:NETSWITCH_HOME } else { Split-Path -Parent $ScriptPath }
 $LogPath    = Join-Path $BaseDir 'net-switch.log'
 $StatePath  = Join-Path (Split-Path -Parent $ConfigPath) 'campus-state.json'
 $Entropy    = [Text.Encoding]::UTF8.GetBytes('net-switch-campus')
@@ -44,7 +44,9 @@ $OpName   = @{ 'cmcc' = '中国移动'; 'unicom' = '中国联通'; 'telecom' = '
 
 function Write-Log([string]$msg) {
   $line = '{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
-  if (-not $Quiet) { Write-Host $line }
+  # stdout 用 [Console]::Out 而不是 Write-Host：PS 5.1 的 Write-Host 不经过标准输出，
+  # 在"无控制台/被重定向"时会丢（exe 形态、计划任务、管道）；这样写既不丢也不污染返回值
+  try { if (-not $Quiet) { [Console]::Out.WriteLine($line) } } catch {}
   try {
     Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 -ErrorAction Stop
     $c = @(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue)
@@ -422,25 +424,25 @@ switch ($Mode) {
   'status' {
     $cfg = Read-Config
     $ip  = Get-WiredIPv4
-    Write-Host ''
-    Write-Host '===== 校园网自动登录 状态 ====='
+    Write-Output ''
+    Write-Output '===== 校园网自动登录 状态 ====='
     if (-not $cfg) {
-      Write-Host '配置:      未配置（运行「校园网登录设置.bat」填账号密码）'
+      Write-Output '配置:      未配置（运行「校园网登录设置.bat」填账号密码）'
     } else {
-      Write-Host ("配置:      账号 {0}{1}（{2}）" -f $cfg.Account, $OpSuffix[$cfg.Operator], $OpName[$cfg.Operator])
-      Write-Host ("           服务器 {0}" -f $cfg.PortalUrl)
-      Write-Host ("           密码   {0}" -f $(if ($cfg.PasswordSaved) { '已保存（DPAPI 加密）' } else { '未保存' }))
-      Write-Host ("           自动登录 {0}" -f $(if ($cfg.AutoLogin) { '开' } else { '关' }))
+      Write-Output ("配置:      账号 {0}{1}（{2}）" -f $cfg.Account, $OpSuffix[$cfg.Operator], $OpName[$cfg.Operator])
+      Write-Output ("           服务器 {0}" -f $cfg.PortalUrl)
+      Write-Output ("           密码   {0}" -f $(if ($cfg.PasswordSaved) { '已保存（DPAPI 加密）' } else { '未保存' }))
+      Write-Output ("           自动登录 {0}" -f $(if ($cfg.AutoLogin) { '开' } else { '关' }))
     }
-    Write-Host ("有线网卡:  {0}" -f $(if ($ip) { $ip } else { '没有 IPv4（网线未插/未拿到地址）' }))
-    if ($ip) { Write-Host ("能否出网:  {0}" -f $(if (Test-CampusOnline $ip) { '能（无需登录）' } else { '不能（需要认证）' })) }
+    Write-Output ("有线网卡:  {0}" -f $(if ($ip) { $ip } else { '没有 IPv4（网线未插/未拿到地址）' }))
+    if ($ip) { Write-Output ("能否出网:  {0}" -f $(if (Test-CampusOnline $ip) { '能（无需登录）' } else { '不能（需要认证）' })) }
     $st = Read-State
     if ($st.lastAttempt) {
-      Write-Host ("上次尝试:  {0}  {1}  {2}" -f $st.lastAttempt, $st.lastResult, $st.lastMsg)
-      Write-Host ("退避到:    {0}" -f $(if ($st.backoffUntil) { $st.backoffUntil } else { '（无）' }))
-    } else { Write-Host '上次尝试:  无记录' }
-    Write-Host ("配置文件:  {0}" -f $ConfigPath)
-    Write-Host ''
+      Write-Output ("上次尝试:  {0}  {1}  {2}" -f $st.lastAttempt, $st.lastResult, $st.lastMsg)
+      Write-Output ("退避到:    {0}" -f $(if ($st.backoffUntil) { $st.backoffUntil } else { '（无）' }))
+    } else { Write-Output '上次尝试:  无记录' }
+    Write-Output ("配置文件:  {0}" -f $ConfigPath)
+    Write-Output ''
   }
   'login' {
     $cfg = Read-Config

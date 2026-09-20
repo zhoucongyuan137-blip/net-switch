@@ -50,7 +50,13 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $ScriptPath = $MyInvocation.MyCommand.Path
-$BaseDir    = Split-Path -Parent $ScriptPath
+$ScriptDir  = Split-Path -Parent $ScriptPath
+# exe 形态下由启动器（build\Launcher.cs）注入这三个环境变量：
+#   NETSWITCH_HOME       = exe 所在目录（日志/状态写这里）
+#   NETSWITCH_SCRIPT_DIR = 脚本释放目录（找兄弟脚本 campus-login.ps1 用这个）
+#   NETSWITCH_EXE        = exe 完整路径（自提权、注册计划任务用）
+$BaseDir       = if ($env:NETSWITCH_HOME)       { $env:NETSWITCH_HOME }       else { $ScriptDir }
+$PeerScriptDir = if ($env:NETSWITCH_SCRIPT_DIR) { $env:NETSWITCH_SCRIPT_DIR } else { $ScriptDir }
 $LogPath    = Join-Path $BaseDir 'net-switch.log'
 $StatePath  = Join-Path $BaseDir 'state.txt'
 
@@ -62,7 +68,7 @@ $ProbeIcmp = @('223.5.5.5','119.29.29.29')
 
 function Write-Log([string]$msg) {
   $line = '{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
-  Write-Host $line
+  try { [Console]::Out.WriteLine($line) } catch {}
   try {
     Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 -ErrorAction Stop
     $c = @(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue)
@@ -170,18 +176,18 @@ function Show-Status {
       跃点   = Get-IfMetricText $a
     }
   }
-  Write-Host ($rows | Format-Table -AutoSize | Out-String -Width 200)
+  Write-Output ($rows | Format-Table -AutoSize | Out-String -Width 200)
 
   $idx = (Find-NetRoute -RemoteIPAddress 223.5.5.5 -ErrorAction SilentlyContinue |
           Where-Object { $_.DestinationPrefix -eq '0.0.0.0/0' } | Select-Object -First 1).InterfaceIndex
   if ($idx) {
     $ad = Get-NetAdapter -InterfaceIndex $idx -ErrorAction SilentlyContinue
-    Write-Host ("系统当前会把公网流量交给: {1} (接口索引 {0})" -f $idx, $ad.Name)
+    Write-Output ("系统当前会把公网流量交给: {1} (接口索引 {0})" -f $idx, $ad.Name)
     if ($ad -and ($ad.Name -match $ExcludePattern -or $ad.InterfaceDescription -match $ExcludePattern -or $ad.InterfaceDescription -match 'Tunnel')) {
-      Write-Host ('  ↑ {0} 是虚拟网卡/隧道（{1}），不是真实出口：它只做中间人，' -f $ad.Name, $ad.InterfaceDescription)
-      Write-Host '    真正的出口由它按"物理默认路由"选，看上面 以太网 / WLAN 两行的【能出网】才准。'
+      Write-Output ('  ↑ {0} 是虚拟网卡/隧道（{1}），不是真实出口：它只做中间人，' -f $ad.Name, $ad.InterfaceDescription)
+      Write-Output '    真正的出口由它按"物理默认路由"选，看上面 以太网 / WLAN 两行的【能出网】才准。'
     }
-    Write-Host ''
+    Write-Output ''
   }
 }
 
@@ -199,7 +205,7 @@ function Read-State { try { Get-Content -LiteralPath $StatePath -ErrorAction Sil
 
 # 有线在线但出不了网时，调 campus-login.ps1 做校园网认证（带频率限制，认证脚本内部自带）
 function Invoke-CampusLogin {
-  $cl = Join-Path $BaseDir 'campus-login.ps1'
+  $cl = Join-Path $PeerScriptDir 'campus-login.ps1'
   if (-not (Test-Path -LiteralPath $cl)) { return $false }
   Write-Log '  有线在线但出不了网 -> 尝试校园网认证'
   try {
@@ -332,8 +338,15 @@ function Install-Task {
   foreach ($t in @($LegacyTask, $WatchTask)) { & schtasks.exe /Delete /TN $t /F 2>&1 | Out-Null }
   Remove-Item -LiteralPath $StatePath -ErrorAction SilentlyContinue
 
-  $common = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath
-  $commonCampus = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $BaseDir 'campus-login.ps1')
+  # exe 形态：计划任务直接调 exe（启动器是 winexe，天然无窗口，不用 -WindowStyle）
+  # 脚本形态：用 powershell -File -WindowStyle Hidden
+  if ($env:NETSWITCH_EXE) {
+    $common       = '"{0}"' -f $env:NETSWITCH_EXE
+    $commonCampus = '"{0}"' -f $env:NETSWITCH_EXE
+  } else {
+    $common       = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath
+    $commonCampus = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $PeerScriptDir 'campus-login.ps1')
+  }
 
   # 网络状态一变（插拔网线 / NCSI 由"有网"变"无网"或反之）就自动判断一次；
   # 不轮询、不常驻，只在事件真的发生时才起一个几秒的进程
@@ -398,7 +411,12 @@ function Uninstall-Task {
 
 if ($Mode -in @('install','hotspot','campus','uninstall') -and -not (Test-Admin) -and -not $DryRun) {
   Write-Host '需要管理员权限，正在请求提权（会弹 UAC 窗口）...'
-  Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}" -Mode {1}' -f $ScriptPath, $Mode)
+  if ($env:NETSWITCH_EXE) {
+    # exe 形态：直接用 exe 重新拉起自己（脚本已内嵌，不需要 -File）
+    Start-Process -FilePath $env:NETSWITCH_EXE -Verb RunAs -ArgumentList @('-Mode', $Mode)
+  } else {
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}" -Mode {1}' -f $ScriptPath, $Mode)
+  }
   exit
 }
 
