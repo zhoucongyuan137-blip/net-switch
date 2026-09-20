@@ -204,8 +204,19 @@ def iface_gw(name):
 
 # ---------------------------------------------------------------- 配置 / 状态
 
+def _user_home():
+    """用 sudo 跑时以 SUDO_USER 的家目录为准，否则 root 会去读 /root/.config 里并不存在的配置。"""
+    su = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and su and su != "root":
+        cand = os.path.join("/home", su)
+        if os.path.isdir(cand):
+            return cand
+    return os.path.expanduser("~")
+
+
 def config_dir():
-    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), APP)
+    # 注意：只有凭据文件走 SUDO_USER；日志/状态仍按当前用户，保证交给 systemd 跑时前后一致
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(_user_home(), ".config"), APP)
 
 
 def state_dir():
@@ -600,6 +611,34 @@ def cmd_watch(args):
         time.sleep(args.interval)
 
 
+def cmd_set(args):
+    """无桌面环境下的配置入口：密码用 getpass 交互输入，不进 shell 历史。"""
+    import getpass
+    acct = args.account or input("账号（学号）: ").strip()
+    if not acct:
+        log("账号不能为空。", args.quiet)
+        return 2
+    op = args.operator
+    if not op:
+        print("运营商: 1=中国移动  2=中国联通  3=中国电信  4=校园网（无后缀）")
+        c = input("选择 [4]: ").strip() or "4"
+        op = {"1": "cmcc", "2": "unicom", "3": "telecom", "4": "campus"}.get(c, "campus")
+    if op not in OP_SUFFIX:
+        log("运营商参数应为 cmcc/unicom/telecom/campus", args.quiet)
+        return 2
+    portal = args.portal or "http://10.2.5.251:801/eportal/"
+    pwd = os.environ.get("NETSWITCH_PASSWORD") or getpass.getpass("密码（不回显；直接回车=沿用已保存的）: ")
+    if not pwd:
+        old_cfg = read_config()
+        if not old_cfg or not old_cfg.get("password"):
+            log("没有输入密码，之前也没保存过 → 取消。", args.quiet)
+            return 2
+    save_config(acct, op, pwd, portal, not args.no_auto)
+    log("已保存配置: %s（权限 %s）" % (config_path(), oct(os.stat(config_path()).st_mode & 0o777)), args.quiet)
+    log("装机提示：开机自动认证 + 夜间切换共用一个安装命令 → python3 %s install" % os.path.basename(__file__), args.quiet)
+    return 0
+
+
 def cmd_forget(args):
     for p in (config_path(), campus_state_path(), state_path()):
         try:
@@ -619,15 +658,19 @@ SELF = os.path.abspath(__file__)
 CFG = config_path()
 
 
-def _unit_service(desc, exec_args):
+def _unit_service(desc, exec_args, timeout="300"):
     return """[Unit]
 Description={desc}
 After=network.target NetworkManager.service
 
 [Service]
 Type=oneshot
+# oneshot 默认 90 秒就超时；settle 要等最长 20/45 分钟，必须显式放开
+TimeoutStartSec={timeout}
+# 0=正常；3=未配置账号、4=网卡还没拿到 IP —— 属于"预期内的跳过"，别把单元标成 failed
+SuccessExitStatus=0 3 4
 ExecStart={py} {self} {args} --quiet
-""".format(desc=desc, py=PY, self=SELF, args=exec_args)
+""".format(desc=desc, py=PY, self=SELF, args=exec_args, timeout=timeout)
 
 
 def _unit_timer(desc, on_calendar):
@@ -651,11 +694,11 @@ def cmd_install(args):
             "login --wait-for-ip 40 --config %s" % CFG) + "\n[Install]\nWantedBy=multi-user.target\n",
         "net-switch-night.service": _unit_service(
             "夜间断网：等到有线真的断了就切到热点（定点运行几分钟即退出）",
-            "settle --until wireddown --max-minutes 20 --config %s" % CFG),
+            "settle --until wireddown --max-minutes 20 --config %s" % CFG, timeout="3600"),
         "net-switch-night.timer": _unit_timer("每天 23:30 触发夜间切换", "*-*-* 23:30:00"),
         "net-switch-morning.service": _unit_service(
             "早上恢复：等到有线恢复就切回有线优先（定点运行几分钟即退出）",
-            "settle --until wiredup --max-minutes 45 --config %s" % CFG),
+            "settle --until wiredup --max-minutes 45 --config %s" % CFG, timeout="3600"),
         "net-switch-morning.timer": _unit_timer("每天 07:00 触发恢复切换", "*-*-* 07:00:00"),
     }
     if args.dry_run:
@@ -794,6 +837,11 @@ def build_parser():
     sub.add_parser("install", parents=[common], help="安装 systemd 单元与定时器（需要 sudo）")
     sub.add_parser("uninstall", parents=[common], help="卸载 systemd 单元（需要 sudo）")
     sub.add_parser("forget", parents=[common], help="删除保存的凭据与状态")
+    sp = sub.add_parser("set", parents=[common], help="命令行配置账号密码（无桌面环境用，密码交互输入不回显）")
+    sp.add_argument("--account", help="学号")
+    sp.add_argument("--operator", choices=["cmcc", "unicom", "telecom", "campus"], help="运营商")
+    sp.add_argument("--portal", help="认证服务器地址")
+    sp.add_argument("--no-auto", action="store_true", help="关掉自动登录开关")
     return p
 
 
@@ -807,7 +855,7 @@ def main(argv=None):
         CFG = args.config
     handlers = {"status": cmd_status, "auto": cmd_auto, "login": cmd_login, "settle": cmd_settle,
                 "watch": cmd_watch, "gui": cmd_gui, "install": cmd_install, "uninstall": cmd_uninstall,
-                "forget": cmd_forget}
+                "forget": cmd_forget, "set": cmd_set}
     if not args.cmd:
         build_parser().print_help()
         return 0

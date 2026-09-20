@@ -4,3 +4,8 @@
 *.ps1 text eol=crlf
 # 文档
 *.md text eol=lf
+# Linux 侧脚本必须 LF：CRLF 会让 shebang 变成 "python3\r"，直接 ./xxx.py 执行报 "没有那个文件或目录"
+*.py text eol=lf
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
