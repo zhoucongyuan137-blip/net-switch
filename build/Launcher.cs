@@ -1,4 +1,4 @@
-// net-switch.exe 启动器
+﻿// net-switch.exe 启动器
 //
 // 目标：既能当命令行工具用（有输出、有退出码、终端会等待），
 //       又能在计划任务/双击时完全不出现窗口。
@@ -28,8 +28,8 @@ using System.Threading;
 [assembly: AssemblyProduct("net-switch")]
 [assembly: AssemblyDescription("校园网/手机热点双网卡自动选路 + 校园网自助认证")]
 [assembly: AssemblyCompany("zhoucongyuan137-blip")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
 
 static class Program
 {

@@ -357,16 +357,27 @@ function Install-Task {
       <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=4004 or EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
     </EventTrigger>
 '@
+
+  # 从睡眠/休眠唤醒也要判断一次：
+  # 唤醒不是"登录"事件，光靠 LogonTrigger 会漏掉——实测早上唤醒后一整段时间没人认证，
+  # 就是因为机器是睡着的、到点该跑的任务没跑，醒来又没有登录事件。
+  $wakeTrig = @'
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT15S</Delay>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[(Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1) or (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=107)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+'@
   $plan = @(
     @{ Name = $NightTask;   Time = $NightTime;   Desc = '校园网断网时把公网切到手机热点（定点运行几分钟即退出）'
        Trig = (New-DailyTrigger $NightTime);   Args = "$common -Mode settle -Until wireddown -MaxMinutes $NightMinutes" }
     @{ Name = $MorningTask; Time = $MorningTime; Desc = '校园网恢复时切回有线优先（定点运行几分钟即退出）'
        Trig = (New-DailyTrigger $MorningTime); Args = "$common -Mode settle -Until wiredup -MaxMinutes $MorningMinutes" }
     @{ Name = $CampusTask;  Time = '';           Desc = '登录后立刻做校园网认证（不等选路的 30 秒判定）'
-       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n    </LogonTrigger>`r`n"
+       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n    </LogonTrigger>`r`n" + $wakeTrig
        Args = "$commonCampus -Mode login -WaitForIpSec 40" }
     @{ Name = $LogonTask;   Time = '';           Desc = '网络状态变化或登录时自动判断一次（兜底，非常驻）'
-       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n      <Delay>PT30S</Delay>`r`n    </LogonTrigger>`r`n" + $eventTrig
+       Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n      <Delay>PT30S</Delay>`r`n    </LogonTrigger>`r`n" + $eventTrig + $wakeTrig
        Args = "$common -Mode auto" }
   )
 

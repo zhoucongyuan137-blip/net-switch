@@ -105,10 +105,10 @@ function Save-Config([string]$acct, [string]$op, [string]$plainPwd, [string]$por
 
 # ---------- 尝试频率限制 ----------
 function Read-State {
-  if (-not (Test-Path -LiteralPath $StatePath)) { return [pscustomobject]@{ lastAttempt = $null; backoffUntil = $null; lastResult = ''; lastMsg = '' } }
-  try { Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { [pscustomobject]@{ lastAttempt = $null; backoffUntil = $null; lastResult = ''; lastMsg = '' } }
+  if (-not (Test-Path -LiteralPath $StatePath)) { return [pscustomobject]@{ lastAttempt = $null; backoffUntil = $null; lastResult = ''; lastMsg = ''; failCount = 0 } }
+  try { Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { [pscustomobject]@{ lastAttempt = $null; backoffUntil = $null; lastResult = ''; lastMsg = ''; failCount = 0 } }
 }
-function Save-State([string]$result, [string]$msg, [string]$backoffUntil) {
+function Save-State([string]$result, [string]$msg, [string]$backoffUntil, [int]$failCount = 0) {
   $dir = Split-Path -Parent $StatePath
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   [ordered]@{
@@ -116,6 +116,7 @@ function Save-State([string]$result, [string]$msg, [string]$backoffUntil) {
     lastResult   = $result
     lastMsg      = $msg
     backoffUntil = $backoffUntil
+    failCount    = $failCount
   } | ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding UTF8
 }
 
@@ -176,6 +177,74 @@ function Parse-PortalResponse([string]$text) {
   [pscustomobject]@{ Ok = $false; Kind = $kind; Msg = ('登录未成功: ' + $msg) }
 }
 
+function Send-PortalRequest {
+  <#
+    发认证请求必须同时满足两件事，否则一定失败（实测踩过）：
+      1) 绕开系统代理：系统代理开着时（Clash Verge 等），任何"讲代理"的 API 都会把请求交给本地代理，
+         而本地代理/它的远程节点到不了校园内网的认证服务器 → 表现为"连不上认证服务器…操作超时"。
+      2) 绑到有线网卡源 IP：默认路由可能被 TUN 虚拟网卡（跃点 0）抢走，不绑源就会进 TUN，同样到不了校园内网。
+    PS 5.1 的 Invoke-WebRequest 没有 -NoProxy 也不支持绑源，所以这里手写 HTTP over TCP：
+    TcpClient 自己没那么聪明，不会去找代理，加上 Bind 就是铁定走有线这张卡。
+  #>
+  param([string]$Url, [string]$BindIP, [int]$TimeoutSec = 6, [string]$UserAgent = 'net-switch')
+  $u = [Uri]$Url
+  $port = if ($u.Port -gt 0) { $u.Port } else { 80 }
+  $cli = New-Object System.Net.Sockets.TcpClient
+  try {
+    $cli.ReceiveTimeout = $TimeoutSec * 1000
+    $cli.SendTimeout    = $TimeoutSec * 1000
+    if ($BindIP) {
+      $cli.Client.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($BindIP), 0)))
+    }
+    $iar = $cli.BeginConnect($u.Host, $port, $null, $null)
+    if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)) { throw ('连接 ' + $u.Host + ':' + $port + ' 超时') }
+    $cli.EndConnect($iar)
+
+    $head = "GET $($u.PathAndQuery) HTTP/1.1`r`nHost: $($u.Host):$port`r`nUser-Agent: $UserAgent`r`nAccept: */*`r`nAccept-Encoding: identity`r`nConnection: close`r`n`r`n"
+    $hb = [Text.Encoding]::ASCII.GetBytes($head)
+    $st = $cli.GetStream()
+    $st.Write($hb, 0, $hb.Length); $st.Flush()
+
+    $ms = New-Object System.IO.MemoryStream
+    $buf = New-Object byte[] 4096
+    try { while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) { $ms.Write($buf, 0, $n) } } catch {}
+  } finally { $cli.Close() }
+
+  $all = $ms.ToArray()
+  if ($all.Length -eq 0) { throw '连接上了但没收到任何数据' }
+  # 拆开响应头与响应体（按 CRLFCRLF）
+  $idx = -1
+  for ($i = 0; $i -le $all.Length - 4; $i++) {
+    if ($all[$i] -eq 13 -and $all[$i+1] -eq 10 -and $all[$i+2] -eq 13 -and $all[$i+3] -eq 10) { $idx = $i; break }
+  }
+  if ($idx -lt 0) { throw 'HTTP 响应格式无法解析（找不到响应头结束标记）' }
+  $hdr = [Text.Encoding]::ASCII.GetString($all, 0, $idx)
+  $body = New-Object byte[] ($all.Length - $idx - 4)
+  if ($body.Length -gt 0) { [Array]::Copy($all, $idx + 4, $body, 0, $body.Length) }
+  $status = 0
+  if ($hdr -match 'HTTP/\d\.\d\s+(\d{3})') { $status = [int]$Matches[1] }
+  # 个别部署用分块传输，拼回来
+  if ($hdr -match '(?i)Transfer-Encoding:\s*chunked') {
+    $out = New-Object System.IO.MemoryStream
+    $pos = 0
+    while ($pos -lt $body.Length) {
+      $eol = -1
+      for ($i = $pos; $i -lt $body.Length - 1; $i++) { if ($body[$i] -eq 13 -and $body[$i+1] -eq 10) { $eol = $i; break } }
+      if ($eol -lt 0) { break }
+      $lenStr = [Text.Encoding]::ASCII.GetString($body, $pos, $eol - $pos).Split(';')[0].Trim()
+      $len = 0
+      if (-not [int]::TryParse($lenStr, [System.Globalization.NumberStyles]::HexNumber, $null, [ref]$len)) { break }
+      if ($len -le 0) { break }
+      $n2 = [Math]::Min($len, $body.Length - $eol - 2)
+      $out.Write($body, $eol + 2, $n2)
+      $pos = $eol + 2 + $len + 2
+    }
+    $body = $out.ToArray()
+  }
+  return [pscustomobject]@{ StatusCode = $status; Bytes = $body; Head = $hdr }
+}
+
+
 function Invoke-PortalLogin {
   param($cfg, [string]$pwdOverride)
   $ip = Get-WiredIPv4
@@ -202,15 +271,16 @@ function Invoke-PortalLogin {
   # 日志里给密码打码
   Write-Log ("发起认证: 账号={0} 本机IP={1} 服务器={2}" -f $user, $ip, $base)
   try {
-    $resp = Invoke-WebRequest -Uri $url -Method Get -TimeoutSec $TimeoutSec -UseBasicParsing `
-             -Headers @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) net-switch' }
-    $body = [string]$resp.Content
+    # 绑到有线网卡源 IP + 绕开系统代理（否则会被 Clash 之类截走，见 Send-PortalRequest 注释）
+    $resp = Send-PortalRequest -Url $url -BindIP $ip -TimeoutSec $TimeoutSec `
+              -UserAgent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) net-switch'
+    $body = [Text.Encoding]::UTF8.GetString($resp.Bytes)
     Write-Log ('认证响应(HTTP {0}): {1}' -f $resp.StatusCode, $body.Substring(0, [Math]::Min(200, $body.Length)))
     $r = Parse-PortalResponse $body
     if ($r.Kind -eq 'unparsed') {
       # 有的部署返回 GBK 编码，按 GB18030 重新解一次再试
       try {
-        $alt = [Text.Encoding]::GetEncoding('GB18030').GetString($resp.RawContentStream.ToArray())
+        $alt = [Text.Encoding]::GetEncoding('GB18030').GetString($resp.Bytes)
         if ($alt -ne $body) {
           $r2 = Parse-PortalResponse $alt
           if ($r2.Kind -ne 'unparsed') { $r = $r2 }
@@ -482,13 +552,17 @@ switch ($Mode) {
 
     $r = Invoke-PortalLogin $cfg ''
     if ($r.Ok) {
-      Save-State 'ok' $r.Msg ''
+      Save-State 'ok' $r.Msg '' 0
       Write-Log ('校园网认证结果: 成功 — ' + $r.Msg)
       exit 0
     }
-    $backoff = $now.AddMinutes($FailBackoffMin).ToString('s')
-    Save-State $r.Kind $r.Msg $backoff
-    Write-Log ('校园网认证结果: 失败[' + $r.Kind + '] ' + $r.Msg + ('（{0} 分钟内不再重试）' -f $FailBackoffMin))
+    # 退避阶梯：连续失败越少退避越短（旧版固定 30 分钟，一次偶发超时就把人挡半小时）
+    $ladder = @(1, 2, 5, 15, [int]$FailBackoffMin) | Select-Object -Unique
+    $fail   = [int]$st.failCount + 1
+    $mins   = [int]$ladder[[Math]::Min($fail - 1, $ladder.Count - 1)]
+    $backoff = $now.AddMinutes($mins).ToString('s')
+    Save-State $r.Kind $r.Msg $backoff $fail
+    Write-Log ('校园网认证结果: 失败[' + $r.Kind + '] ' + $r.Msg + ('（第 {0} 次失败，{1} 分钟后重试）' -f $fail, $mins))
     exit 1
   }
 }

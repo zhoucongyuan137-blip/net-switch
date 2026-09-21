@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 net-switch (Linux) —— 有线没出口时自动改走手机热点 + 校园网自助认证
@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 APP = "net-switch"
 
 PROBE_TARGETS = [("223.5.5.5", 443), ("119.29.29.29", 443)]   # 阿里/腾讯 DNS，TCP 通也算通
