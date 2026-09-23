@@ -186,7 +186,7 @@ function Send-PortalRequest {
     PS 5.1 的 Invoke-WebRequest 没有 -NoProxy 也不支持绑源，所以这里手写 HTTP over TCP：
     TcpClient 自己没那么聪明，不会去找代理，加上 Bind 就是铁定走有线这张卡。
   #>
-  param([string]$Url, [string]$BindIP, [int]$TimeoutSec = 6, [string]$UserAgent = 'net-switch')
+  param([string]$Url, [string]$BindIP, [int]$TimeoutSec = 6, [string]$UserAgent = 'net-switch', [string]$HostHeader)
   $u = [Uri]$Url
   $port = if ($u.Port -gt 0) { $u.Port } else { 80 }
   $cli = New-Object System.Net.Sockets.TcpClient
@@ -200,7 +200,8 @@ function Send-PortalRequest {
     if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)) { throw ('连接 ' + $u.Host + ':' + $port + ' 超时') }
     $cli.EndConnect($iar)
 
-    $head = "GET $($u.PathAndQuery) HTTP/1.1`r`nHost: $($u.Host):$port`r`nUser-Agent: $UserAgent`r`nAccept: */*`r`nAccept-Encoding: identity`r`nConnection: close`r`n`r`n"
+    $vhost = if ($HostHeader) { $HostHeader } else { $u.Host }
+    $head = "GET $($u.PathAndQuery) HTTP/1.1`r`nHost: $vhost`r`nUser-Agent: $UserAgent`r`nAccept: */*`r`nAccept-Encoding: identity`r`nConnection: close`r`n`r`n"
     $hb = [Text.Encoding]::ASCII.GetBytes($head)
     $st = $cli.GetStream()
     $st.Write($hb, 0, $hb.Length); $st.Flush()
@@ -245,6 +246,44 @@ function Send-PortalRequest {
 }
 
 
+function Get-CampusPortalParams {
+  <#
+    为什么必须这么做（实测踩坑）：
+    本机在宿舍路由器后面，自己的地址是 192.168.31.44 —— 但校园网门户认的是**校园侧那个地址**
+    （如 10.3.132.172，宿舍那台路由器/设备拿到的校园 IP）。用 192.168.x.x 去认证，门户会回"认证成功"
+    （账号层面过了），可出口根本没对这台机器放行 → 用户感受就是"认证成功但还是没网"，
+    而手动打开门户页登录（浏览器带着 wlanuserip=10.3.132.172&mac=...&nasip=...）立刻就通。
+    所以：未认证时先直连一个公网 HTTP 目标，校园网关会把请求劫持到门户页并带上这些参数，抓下来复用。
+  #>
+  param([int]$TimeoutSec = 5)
+  $wired = Get-WiredIPv4
+  if (-not $wired) { return [pscustomobject]@{ Intercepted = $false } }
+  $targets = @(@('39.156.66.10', 'www.baidu.com'), @('110.242.68.66', 'www.baidu.com'), @('1.1.1.1', 'one.one.one.one'))
+  # 测试/换学校用：NETSWITCH_PROBE_TARGETS="ip,host;ip,host"
+  if ($env:NETSWITCH_PROBE_TARGETS) {
+    $targets = @()
+    foreach ($x in $env:NETSWITCH_PROBE_TARGETS.Split(';')) {
+      $kv = $x.Split(',')
+      if ($kv.Count -eq 2 -and $kv[0]) { $targets += ,@($kv[0], $kv[1]) }
+    }
+  }
+  foreach ($t in $targets) {
+    try {
+      $res = Send-PortalRequest -Url ("http://{0}/" -f $t[0]) -BindIP $wired -TimeoutSec $TimeoutSec -HostHeader $t[1]
+      $blob = $res.Head + " " + [Text.Encoding]::UTF8.GetString($res.Bytes)
+      if ($blob -notmatch 'a79\.htm|/eportal|10\.2\.5\.251') { continue }   # 没被门户劫持 → 说明已经是通的状态
+      $o = [ordered]@{ Intercepted = $true; Raw = $t[0] }
+      foreach ($k in @('wlanuserip', 'mac', 'nasip', 'wlanacname')) {
+        $m = [regex]::Match($blob, ($k + '=([^&\s"'']+)'))
+        if ($m.Success) { $o[$k] = $m.Groups[1].Value }
+      }
+      return [pscustomobject]$o
+    } catch {}
+  }
+  return [pscustomobject]@{ Intercepted = $false }
+}
+
+
 function Invoke-PortalLogin {
   param($cfg, [string]$pwdOverride)
   $ip = Get-WiredIPv4
@@ -256,6 +295,15 @@ function Invoke-PortalLogin {
   $op   = if ($cfg.Operator) { $cfg.Operator } else { 'campus' }
   $user = $cfg.Account + $OpSuffix[$op]
   $base = ($cfg.PortalUrl).TrimEnd('/')
+
+  # 先从校园网关的劫持页里发现"校园侧地址 + MAC + nasip"；拿不到才退回本机地址
+  $pp     = Get-CampusPortalParams
+  $authIp = if ($pp.Intercepted -and $pp.wlanuserip) { $pp.wlanuserip } else { $ip }
+  if ($pp.Intercepted -and $pp.wlanuserip) {
+    Write-Log ('门户劫持页给出校园侧参数: 地址={0} mac={1} nasip={2} ac={3}' -f $pp.wlanuserip, $pp.mac, $pp.nasip, $pp.wlanacname)
+  } elseif ($authIp -ne $ip) {
+    Write-Log ('未能从门户劫持页取到校园侧地址，退回本机地址 {0}' -f $ip)
+  }
   # 注意：必须给每个 "键=值" 加括号。PowerShell 在数组字面量里会把
   # 'k=' + [Uri]::EscapeDataString($v) 解析成两个元素，拼出来的是 "user_account=&账号" 这种畸形串。
   $qs = @(
@@ -264,12 +312,18 @@ function Invoke-PortalLogin {
     'login_method=1'
     ('user_account='  + [Uri]::EscapeDataString($user))
     ('user_password=' + [Uri]::EscapeDataString($pwd))
-    ('wlan_user_ip='  + [Uri]::EscapeDataString($ip))
-  ) -join '&'
+    ('wlan_user_ip='  + [Uri]::EscapeDataString($authIp))
+  )
+  if ($pp.Intercepted) {
+    if ($pp.mac)        { $qs += '&wlan_user_mac=' + [Uri]::EscapeDataString($pp.mac) }
+    if ($pp.nasip)      { $qs += '&wlan_ac_ip='   + [Uri]::EscapeDataString($pp.nasip) }
+    if ($pp.wlanacname) { $qs += '&wlan_ac_name=' + [Uri]::EscapeDataString($pp.wlanacname) }
+  }
+  $qs = ($qs -join '&')
   $url = "$base/?$qs"
 
   # 日志里给密码打码
-  Write-Log ("发起认证: 账号={0} 本机IP={1} 服务器={2}" -f $user, $ip, $base)
+  Write-Log ("发起认证: 账号={0} 本机IP={1} 用认证地址={2} 服务器={3}" -f $user, $ip, $authIp, $base)
   try {
     # 绑到有线网卡源 IP + 绕开系统代理（否则会被 Clash 之类截走，见 Send-PortalRequest 注释）
     $resp = Send-PortalRequest -Url $url -BindIP $ip -TimeoutSec $TimeoutSec `
@@ -290,6 +344,12 @@ function Invoke-PortalLogin {
     # 再实测一下是否真的通了（响应说成功也以真连通为准）
     if ($r.Ok) {
       Start-Sleep -Milliseconds 800
+      # 关键：接口说成功不算成功 —— 再看门户是不是还在劫持我们（还在劫持 = 出口并没放行）
+      $pp2 = Get-CampusPortalParams -TimeoutSec 4
+      if ($pp2.Intercepted) {
+        return [pscustomobject]@{ Ok = $false; Kind = 'still-blocked';
+          Msg = ('认证接口返回成功，但门户仍在拦截（说明这次认证没真正放行）：' + $r.Msg) }
+      }
       if (Test-CampusOnline $ip) { return [pscustomobject]@{ Ok = $true; Kind = 'ok'; Msg = '认证成功，外网已通' } }
       return [pscustomobject]@{ Ok = $true; Kind = 'ok-unconfirmed'; Msg = ('认证接口返回成功，但外网暂时还不通：' + $r.Msg) }
     }

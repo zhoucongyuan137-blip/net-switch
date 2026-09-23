@@ -28,8 +28,8 @@ using System.Threading;
 [assembly: AssemblyProduct("net-switch")]
 [assembly: AssemblyDescription("校园网/手机热点双网卡自动选路 + 校园网自助认证")]
 [assembly: AssemblyCompany("zhoucongyuan137-blip")]
-[assembly: AssemblyVersion("1.1.2.0")]
-[assembly: AssemblyFileVersion("1.1.2.0")]
+[assembly: AssemblyVersion("1.1.3.0")]
+[assembly: AssemblyFileVersion("1.1.3.0")]
 
 static class Program
 {
