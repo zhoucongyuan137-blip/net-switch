@@ -15,6 +15,7 @@ __pycache__/
 
 # 构建产物（自己 build 或从 Release 下载）
 dist/
+/net-switch.exe
 
 # 本机临时脚本与截图
 _*.ps1

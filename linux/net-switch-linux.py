@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 APP = "net-switch"
 
 PROBE_TARGETS = [("223.5.5.5", 443), ("119.29.29.29", 443)]   # 阿里/腾讯 DNS，TCP 通也算通

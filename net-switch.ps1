@@ -266,7 +266,7 @@ function Test-TimeInWindow {
 
 # ---------------- 计划任务 ----------------
 function New-TaskXml {
-  param([string]$Name, [string]$Desc, [string]$TriggerXml, [string]$Arguments)
+  param([string]$Name, [string]$Desc, [string]$TriggerXml, [string]$Arguments, [string]$Command = 'powershell.exe')
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
@@ -306,7 +306,7 @@ $TriggerXml
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
+      <Command>$Command</Command>
       <Arguments>$Arguments</Arguments>
     </Exec>
   </Actions>
@@ -341,20 +341,27 @@ function Install-Task {
   # exe 形态：计划任务直接调 exe（启动器是 winexe，天然无窗口，不用 -WindowStyle）
   # 脚本形态：用 powershell -File -WindowStyle Hidden
   if ($env:NETSWITCH_EXE) {
-    $common       = '"{0}"' -f $env:NETSWITCH_EXE
-    $commonCampus = '"{0}"' -f $env:NETSWITCH_EXE
+    # exe 形态：计划任务的 Command 直接就是 exe（启动器自己会藏控制台窗口），
+    # 参数里**不要再包一层 powershell.exe** —— 那样照样会闪一个控制台。
+    $taskCmd      = $env:NETSWITCH_EXE
+    $common       = ''
+    $commonCampus = ''
   } else {
+    $taskCmd      = 'powershell.exe'
     $common       = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath
     $commonCampus = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $PeerScriptDir 'campus-login.ps1')
   }
 
   # 网络状态一变（插拔网线 / NCSI 由"有网"变"无网"或反之）就自动判断一次；
   # 不轮询、不常驻，只在事件真的发生时才起一个几秒的进程
+  # 只订阅"网络已连接/已断开"（10000/10001）。
+  # 千万别加 4004（网络状态变更）：Clash 的 TUN、VMware、蓝牙等虚拟网卡会把它刷成风暴，
+  # 实测 20 分钟内触发 20 次 → 每次都拉起一个任务进程（窗口虽隐藏但会闪）→ 用户看到"不断弹窗"。
   $eventTrig = @'
     <EventTrigger>
       <Enabled>true</Enabled>
-      <Delay>PT5S</Delay>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=4004 or EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+      <Delay>PT15S</Delay>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
     </EventTrigger>
 '@
 
@@ -370,20 +377,20 @@ function Install-Task {
 '@
   $plan = @(
     @{ Name = $NightTask;   Time = $NightTime;   Desc = '校园网断网时把公网切到手机热点（定点运行几分钟即退出）'
-       Trig = (New-DailyTrigger $NightTime);   Args = "$common -Mode settle -Until wireddown -MaxMinutes $NightMinutes" }
+       Trig = (New-DailyTrigger $NightTime);   Cmd = $taskCmd; Args = "$common -Mode settle -Until wireddown -MaxMinutes $NightMinutes" }
     @{ Name = $MorningTask; Time = $MorningTime; Desc = '校园网恢复时切回有线优先（定点运行几分钟即退出）'
-       Trig = (New-DailyTrigger $MorningTime); Args = "$common -Mode settle -Until wiredup -MaxMinutes $MorningMinutes" }
+       Trig = (New-DailyTrigger $MorningTime); Cmd = $taskCmd; Args = "$common -Mode settle -Until wiredup -MaxMinutes $MorningMinutes" }
     @{ Name = $CampusTask;  Time = '';           Desc = '登录后立刻做校园网认证（不等选路的 30 秒判定）'
        Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n    </LogonTrigger>`r`n" + $wakeTrig
-       Args = "$commonCampus -Mode login -WaitForIpSec 40" }
+       Cmd = $taskCmd; Args = "$commonCampus -Mode login -WaitForIpSec 40" }
     @{ Name = $LogonTask;   Time = '';           Desc = '网络状态变化或登录时自动判断一次（兜底，非常驻）'
        Trig = "    <LogonTrigger>`r`n      <Enabled>true</Enabled>`r`n      <Delay>PT30S</Delay>`r`n    </LogonTrigger>`r`n" + $eventTrig + $wakeTrig
-       Args = "$common -Mode auto" }
+       Cmd = $taskCmd; Args = "$common -Mode auto" }
   )
 
   $ok = $true
   foreach ($j in $plan) {
-    $f = New-TaskXml -Name $j.Name -Desc $j.Desc -TriggerXml $j.Trig -Arguments $j.Args
+    $f = New-TaskXml -Name $j.Name -Desc $j.Desc -TriggerXml $j.Trig -Arguments ($j.Args).Trim() -Command $j.Cmd
     $out = & schtasks.exe /Create /TN $j.Name /XML $f /F 2>&1
     $when = if ($j.Time) { "（每天 $($j.Time)）" } else { '（登录时）' }
     Write-Log ("创建任务 {0}{1} -> {2}" -f $j.Name, $when, ($out -join ' '))

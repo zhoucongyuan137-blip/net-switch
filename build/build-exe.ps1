@@ -59,6 +59,12 @@ $out = & $csc @cscArgs 2>&1
 if ($LASTEXITCODE -ne 0) { $out | ForEach-Object { Write-Host $_ }; throw "编译失败（退出码 $LASTEXITCODE）" }
 $out | Where-Object { $_ -notmatch 'warning' } | ForEach-Object { Write-Host $_ }
 
+# 再在仓库根目录放一份：计划任务指向它，日志/状态才会落在根目录（而不是 dist\ 下被拆开）
+$rootExe = Join-Path (Split-Path -Parent $PSScriptRoot) 'net-switch.exe'
+Copy-Item -LiteralPath $exe -Destination $rootExe -Force
+
 $fi = Get-Item -LiteralPath $exe
+$ri = Get-Item -LiteralPath $rootExe
 Write-Host ("`n编译成功: {0}  ({1:N0} KB, {2})" -f $fi.Name, ($fi.Length / 1KB), $fi.LastWriteTime)
+Write-Host ("本机运行副本: {0}  ({1:N0} KB)  ← 计划任务用这份，日志/状态与脚本版共用根目录" -f $ri.FullName, ($ri.Length / 1KB))
 Write-Host "验证：`n  & '$exe' -Mode status`n  & '$exe'            # 打开设置界面"
