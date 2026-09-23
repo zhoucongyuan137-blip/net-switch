@@ -44,3 +44,9 @@ python3 net-switch-linux.py forget          # 删除保存的凭据
 - 改路由需要 root：`install` 和自动切换用 `sudo -n`（要求已配 NOPASSWD，或直接用 root 跑）。只读的 `status`/探测不需要 root。
 - GUI 需要 `python3-tk`：`sudo apt install python3-tk`
 - 探测/认证只用标准库；`ping` 仅作 ICMP 兜底（可选）
+
+## 已知差异（相对 Windows 版 v1.1.3）
+
+Windows 版已加入"从门户劫持页发现校园侧地址/MAC（wlanuserip/mac/nasip），并用它认证 + 认证后复查是否仍被拦截"。
+**Linux 版尚未移植**：它仍用本机地址作为 `wlan_user_ip`。直接接校园网口时没问题；
+若设备接在宿舍路由器后面（本机是 192.168.x.x），会出现"接口报成功但出口没放行"的假成功现象。

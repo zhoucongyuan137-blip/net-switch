@@ -139,3 +139,22 @@ Set-NetIPInterface -InterfaceAlias "以太网" -AddressFamily IPv4 -AutomaticMet
 ## License
 
 MIT
+
+## 在宿舍路由器后面也能认证（v1.1.3 起）
+
+如果你不是把电脑直接插在校园网口上，而是接在宿舍路由器后面（本机是 `192.168.x.x`），
+校园网门户认的其实是**校园侧那个地址**（路由器/设备从校园 DHCP 拿到的 `10.x`）——用本机私有地址去认证，
+门户会回"认证成功"但出口不会放行（症状：工具说成功、你却一直没网）。
+
+工具现在的做法：未认证时先直连一个公网 HTTP 目标，校园网关会把请求**劫持到门户页**，从跳转 URL 里
+把 `wlanuserip / mac / nasip / wlanacname` 抓下来，用这些真实参数去认证；认证后再复查门户是否仍在劫持，
+**仍在劫持就判失败**（不再假报成功）。
+
+换学校或需要自测时，可用环境变量覆盖探测目标：
+
+```powershell
+$env:NETSWITCH_PROBE_TARGETS = "39.156.66.10,www.baidu.com;1.1.1.1,one.one.one.one"
+```
+
+> Linux 版（`linux/net-switch-linux.py`）目前**还没移植这个逻辑**，仍按本机地址认证；
+> 直接接校园网口时没问题，接在路由器后面时会有同样的"假成功"现象。
